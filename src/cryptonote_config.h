@@ -41,10 +41,10 @@
 #define CRYPTONOTE_MAX_TX_SIZE                          1000000
 #define CRYPTONOTE_MAX_TX_PER_BLOCK                     0x10000000
 #define CRYPTONOTE_PUBLIC_ADDRESS_TEXTBLOB_VER          0
-#define CRYPTONOTE_MINED_MONEY_UNLOCK_WINDOW            60
+#define CRYPTONOTE_MINED_MONEY_UNLOCK_WINDOW            33
 #define CURRENT_TRANSACTION_VERSION                     2
-#define CURRENT_BLOCK_MAJOR_VERSION                     1
-#define CURRENT_BLOCK_MINOR_VERSION                     0
+#define CURRENT_BLOCK_MAJOR_VERSION                     7
+#define CURRENT_BLOCK_MINOR_VERSION                     7
 #define CRYPTONOTE_BLOCK_FUTURE_TIME_LIMIT              60*60*2
 #define CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE             10
 
@@ -227,14 +227,15 @@ namespace config
   uint64_t const CRYPTONOTE_PUBLIC_ADDRESS_BASE58_PREFIX = 18;
   uint64_t const CRYPTONOTE_PUBLIC_INTEGRATED_ADDRESS_BASE58_PREFIX = 19;
   uint64_t const CRYPTONOTE_PUBLIC_SUBADDRESS_BASE58_PREFIX = 42;
-  uint16_t const P2P_DEFAULT_PORT = 18080;
-  uint16_t const RPC_DEFAULT_PORT = 18081;
-  uint16_t const ZMQ_RPC_DEFAULT_PORT = 18082;
+  uint16_t const P2P_DEFAULT_PORT = 14040;
+  uint16_t const RPC_DEFAULT_PORT = 14041;
+  uint16_t const ZMQ_RPC_DEFAULT_PORT = 14042;
   boost::uuids::uuid const NETWORK_ID = { {
-      0x12 ,0x30, 0xF1, 0x71 , 0x61, 0x04 , 0x41, 0x61, 0x17, 0x31, 0x00, 0x82, 0x16, 0xA1, 0xA1, 0x10
+      0x8 ,0x30, 0xF1, 0x71 , 0x1, 0x44 , 0x21, 0x41, 0x7, 0x71, 0x20, 0x42, 0x56, 0xA1, 0xA1, 0x40
     } }; // Bender's nightmare
-  std::string const GENESIS_TX = "013c01ff0001ffffffffffff03029b2e4c0281c0b02e7c53291a94d1d0cbff8883f8024f5142ee494ffbbd08807121017767aafcde9be00dcfd098715ebcf7f410daebc582fda69d24a28e9d0bc890d1";
-  uint32_t const GENESIS_NONCE = 10000;
+  std::string const GENESIS_TX = "022101ff0002d593eb94e6cc0702cb2dc0e1f2e6f8ee7a46c5773d40d8e2d4d57e14786bc27086482c288611a7c9e9ec99cb993302a13dc4d7d5d974dbda7c3565aafee932302cda9c277e952a1d71680a6a1aa8844201869acf228322eb4f199eb13775a736b15a2ec7578bce73cdc91eb4d50a0e6a060158666666666666666666666666666666666666666666666666666666666666660000";
+  uint32_t const GENESIS_NONCE = 1788598869;
+  std::string const ANT_ADDRESS = "45DTM8mzvYFUqFb4VQwyUX422Rif3gyqgdsUb58aWGx2Nqa4F3F6YkMGEAKm5rHAmPSxmX1fQ7UqUckEiZBe3gFK8vH6tZP";
 
   // Hash domain separators
   const char HASH_KEY_BULLETPROOF_EXPONENT[] = "bulletproof";
@@ -278,6 +279,7 @@ namespace config
       } }; // Bender's daydream
     std::string const GENESIS_TX = "013c01ff0001ffffffffffff03029b2e4c0281c0b02e7c53291a94d1d0cbff8883f8024f5142ee494ffbbd08807121017767aafcde9be00dcfd098715ebcf7f410daebc582fda69d24a28e9d0bc890d1";
     uint32_t const GENESIS_NONCE = 10001;
+  std::string const ANT_ADDRESS = "9xCnC4HXQmoEA1zBYxgHzcggwK24rAAHcgaXAHGVEU6EaXgTdLBMqp9Y8VPMqWAmr5cswZJ6wUp3eVPpfDZu4wtT6K5iUxC";
   }
 
   namespace stagenet
@@ -293,6 +295,7 @@ namespace config
       } }; // Bender's daydream
     std::string const GENESIS_TX = "013c01ff0001ffffffffffff0302df5d56da0c7d643ddd1ce61901c7bdc5fb1738bfe39fbe69c28a3a7032729c0f2101168d0c4ca86fb55a4cf6a36d31431be1c53a3bd7411bb24e8832410289fa6f3b";
     uint32_t const GENESIS_NONCE = 10002;
+  std::string const ANT_ADDRESS = "9xCnC4HXQmoEA1zBYxgHzcggwK24rAAHcgaXAHGVEU6EaXgTdLBMqp9Y8VPMqWAmr5cswZJ6wUp3eVPpfDZu4wtT6K5iUxC";
   }
 }
 
@@ -317,6 +320,7 @@ namespace cryptonote
     boost::uuids::uuid const NETWORK_ID;
     std::string const GENESIS_TX;
     uint32_t const GENESIS_NONCE;
+    std::string const *ANT_ADDRESS;
   };
   inline const config_t& get_config(network_type nettype)
   {
@@ -329,7 +333,8 @@ namespace cryptonote
       ::config::ZMQ_RPC_DEFAULT_PORT,
       ::config::NETWORK_ID,
       ::config::GENESIS_TX,
-      ::config::GENESIS_NONCE
+      ::config::GENESIS_NONCE,
+       &::config::ANT_ADDRESS,
     };
     static const config_t testnet = {
       ::config::testnet::CRYPTONOTE_PUBLIC_ADDRESS_BASE58_PREFIX,
@@ -340,7 +345,8 @@ namespace cryptonote
       ::config::testnet::ZMQ_RPC_DEFAULT_PORT,
       ::config::testnet::NETWORK_ID,
       ::config::testnet::GENESIS_TX,
-      ::config::testnet::GENESIS_NONCE
+      ::config::testnet::GENESIS_NONCE,
+        &::config::ANT_ADDRESS,
     };
     static const config_t stagenet = {
       ::config::stagenet::CRYPTONOTE_PUBLIC_ADDRESS_BASE58_PREFIX,
@@ -351,7 +357,8 @@ namespace cryptonote
       ::config::stagenet::ZMQ_RPC_DEFAULT_PORT,
       ::config::stagenet::NETWORK_ID,
       ::config::stagenet::GENESIS_TX,
-      ::config::stagenet::GENESIS_NONCE
+      ::config::stagenet::GENESIS_NONCE,
+        &::config::ANT_ADDRESS,
     };
     switch (nettype)
     {

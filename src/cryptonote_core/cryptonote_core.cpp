@@ -230,7 +230,7 @@ namespace cryptonote
               m_checkpoints_path(""),
               m_last_dns_checkpoints_update(0),
               m_last_json_checkpoints_update(0),
-              m_disable_dns_checkpoints(false),
+              m_disable_dns_checkpoints(true),
               m_update_download(0),
               m_nettype(UNDEFINED),
               m_update_available(false)
@@ -865,20 +865,6 @@ namespace cryptonote
       return false;
     }
 
-    if (tx.version == 1)
-    {
-      uint64_t amount_in = 0;
-      get_inputs_money_amount(tx, amount_in);
-      uint64_t amount_out = get_outs_money_amount(tx);
-
-      if(amount_in <= amount_out)
-      {
-        MERROR_VER("tx with wrong amounts: ins " << amount_in << ", outs " << amount_out << ", rejected for tx id= " << get_transaction_hash(tx));
-        tvc.m_verifivation_failed = true;
-        tvc.m_overspend = true;
-        return false;
-      }
-    }
     // for version > 1, ringct signatures check verifies amounts match
 
     //check if tx use different key images
@@ -1741,7 +1727,7 @@ namespace cryptonote
       return true;
 
     MCERROR("updates", "Download/update not implemented yet");
-    return true;
+    return false;
   }
   //-----------------------------------------------------------------------------------------------
   bool core::check_disk_space()

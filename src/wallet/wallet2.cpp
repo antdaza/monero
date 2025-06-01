@@ -2249,7 +2249,7 @@ void wallet2::cache_tx_data(const cryptonote::transaction& tx, const crypto::has
   const bool is_miner = tx.vin.size() == 1 && tx.vin[0].type() == typeid(cryptonote::txin_gen);
   if (!is_miner || m_refresh_type != RefreshType::RefreshNoCoinbase)
   {
-    const size_t rec_size = (is_miner && m_refresh_type == RefreshType::RefreshOptimizeCoinbase && tx.version < 2) ? 1 : tx.vout.size();
+    const size_t rec_size = tx.vout.size();
     if (!tx.vout.empty())
     {
       // if tx.vout is not empty, we loop through all tx pubkeys
@@ -2395,39 +2395,6 @@ void wallet2::process_new_transaction(const crypto::hash &txid, const cryptonote
     if (miner_tx && m_refresh_type == RefreshNoCoinbase)
     {
       // assume coinbase isn't for us
-    }
-    else if (miner_tx && m_refresh_type == RefreshOptimizeCoinbase && tx.version < 2)
-    {
-      check_acc_out_precomp_once(tx.vout[0], derivation, additional_derivations, 0, is_out_data_ptr, tx_scan_info[0], output_found[0]);
-      THROW_WALLET_EXCEPTION_IF(tx_scan_info[0].error, error::acc_outs_lookup_error, tx, tx_pub_key, m_account.get_keys());
-
-      // this assumes that the miner tx pays a single address
-      if (tx_scan_info[0].received)
-      {
-        // process the other outs from that tx
-        // the first one was already checked
-        for (size_t i = 1; i < tx.vout.size(); ++i)
-        {
-          check_acc_out_precomp_once(tx.vout[i], derivation, additional_derivations, i, is_out_data_ptr, tx_scan_info[i], output_found[i]);
-        }
-        // then scan all outputs from 0
-        hw::device &hwdev = m_account.get_device();
-        boost::unique_lock<hw::device> hwdev_lock (hwdev);
-        hwdev.set_mode(hw::device::NONE);
-        for (size_t i = 0; i < tx.vout.size(); ++i)
-        {
-          THROW_WALLET_EXCEPTION_IF(tx_scan_info[i].error, error::acc_outs_lookup_error, tx, tx_pub_key, m_account.get_keys());
-          if (tx_scan_info[i].received)
-          {
-            hwdev.conceal_derivation(tx_scan_info[i].received->derivation, tx_pub_key, additional_tx_pub_keys.data, derivation, additional_derivations);
-            scan_output(tx, miner_tx, tx_pub_key, i, tx_scan_info[i], num_vouts_received, tx_money_got_in_outs, outs, pool);
-            if (!tx_scan_info[i].error)
-            {
-              tx_amounts_individual_outs[tx_scan_info[i].received->index].push_back(tx_scan_info[i].money_transfered);
-            }
-          }
-        }
-      }
     }
     else
     {
@@ -2774,7 +2741,7 @@ void wallet2::process_new_transaction(const crypto::hash &txid, const cryptonote
     }
   }
 
-  uint64_t fee = miner_tx ? 0 : tx.version == 1 ? tx_money_spent_in_ins - get_outs_money_amount(tx) : tx.rct_signatures.txnFee;
+  uint64_t fee = tx.rct_signatures.txnFee;
 
   if (tx_money_spent_in_ins > 0 && !pool)
   {
@@ -2939,10 +2906,8 @@ void wallet2::process_outgoing(const crypto::hash &txid, const cryptonote::trans
     // wallet (eg, we're a cold wallet and the hot wallet sent it). For RCT transactions,
     // we only see 0 input amounts, so have to deduce amount out from other parameters.
     entry.first->second.m_amount_in = spent;
-    if (tx.version == 1)
-      entry.first->second.m_amount_out = get_outs_money_amount(tx);
-    else
-      entry.first->second.m_amount_out = spent - tx.rct_signatures.txnFee;
+
+    entry.first->second.m_amount_out = spent - tx.rct_signatures.txnFee;
     entry.first->second.m_change = received;
 
     std::vector<tx_extra_field> tx_extra_fields;
@@ -3418,22 +3383,25 @@ void wallet2::refresh(bool trusted_daemon, uint64_t start_height, uint64_t & blo
 //----------------------------------------------------------------------------------------------------
 void check_block_hard_fork_version(cryptonote::network_type nettype, uint8_t hf_version, uint64_t height, bool &wallet_is_outdated, bool &daemon_is_outdated)
 {
-  const size_t wallet_num_hard_forks = nettype == TESTNET ? num_testnet_hard_forks
-    : nettype == STAGENET ? num_stagenet_hard_forks : num_mainnet_hard_forks;
-  const hardfork_t *wallet_hard_forks = nettype == TESTNET ? testnet_hard_forks
-    : nettype == STAGENET ? stagenet_hard_forks : mainnet_hard_forks;
+    // Default to the first version (7) if no match is found
+    uint8_t expected_version = mainnet_hard_forks[0].version; // 7
 
-  wallet_is_outdated = static_cast<size_t>(hf_version) > wallet_num_hard_forks;
-  if (wallet_is_outdated)
-    return;
+    // Iterate through the hard fork table to find the expected version for the given height
+    for (size_t i = 0; i < num_mainnet_hard_forks; ++i)
+    {
+        if (height >= mainnet_hard_forks[i].height)
+        {
+            expected_version = mainnet_hard_forks[i].version;
+        }
+        else
+        {
+            break; // Stop once we pass the height
+        }
+    }
 
-  // check block's height falls within wallet's expected range for block's given version
-  uint64_t start_height = hf_version == 1 ? 0 : wallet_hard_forks[hf_version - 1].height;
-  uint64_t end_height = static_cast<size_t>(hf_version) + 1 > wallet_num_hard_forks
-    ? std::numeric_limits<uint64_t>::max()
-    : wallet_hard_forks[hf_version].height;
-
-  daemon_is_outdated = height < start_height || height >= end_height;
+    // Determine if wallet or daemon is outdated based on the version comparison
+    wallet_is_outdated = hf_version > expected_version;  // Wallet supports a newer version not yet active
+    daemon_is_outdated = hf_version < expected_version;  // Daemon is behind the expected version
 }
 //----------------------------------------------------------------------------------------------------
 void wallet2::pull_and_parse_next_blocks(bool first, bool try_incremental, uint64_t start_height, uint64_t &blocks_start_height, std::list<crypto::hash> &short_chain_history, const std::vector<cryptonote::block_complete_entry> &prev_blocks, const std::vector<parsed_block> &prev_parsed_blocks, std::vector<cryptonote::block_complete_entry> &blocks, std::vector<parsed_block> &parsed_blocks, bool &last, bool &error, std::exception_ptr &exception)
@@ -12827,11 +12795,7 @@ void wallet2::check_tx_key_helper(const cryptonote::transaction &tx, const crypt
     if (is_out_to_acc(address, output_public_key, derivation, additional_derivations, n, get_output_view_tag(tx.vout[n]), found_derivation))
     {
       uint64_t amount;
-      if (tx.version == 1 || tx.rct_signatures.type == rct::RCTTypeNull)
-      {
-        amount = tx.vout[n].amount;
-      }
-      else
+      if (tx.version >= 2)
       {
         crypto::secret_key scalar1;
         crypto::derivation_to_scalar(found_derivation, n, scalar1);
