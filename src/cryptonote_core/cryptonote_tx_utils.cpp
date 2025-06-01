@@ -98,10 +98,10 @@ namespace cryptonote
    //-------------------------------------------------------------
    uint64_t get_ant_reward(uint64_t height, uint64_t base_reward)
    {
-     return base_reward / 20;
+     return base_reward / 6;
    }
   //---------------------------------------------------------------------
-   bool get_deterministic_output_key(const account_public_address& address, const keypair& tx_key,
+ bool get_deterministic_output_key(const account_public_address& address, const keypair& tx_key,
                                   size_t output_index, uint64_t height, crypto::public_key& output_key,
                                    crypto::view_tag* view_tag = nullptr)
    {
@@ -109,7 +109,7 @@ namespace cryptonote
     cryptonote::keypair additional_txkey;
     bool r = crypto::generate_key_derivation(address.m_view_public_key, tx_key.sec, derivation);
     CHECK_AND_ASSERT_MES(r, false, "while creating outs: failed to generate_key_derivation("
-        << address.m_view_public_key << ", " << additional_txkey.sec << ")");
+        << address.m_view_public_key << ", " << crypto::secret_key_explicit_print_ref{additional_txkey.sec} << ")");
 
     r = crypto::derive_public_key(derivation, output_index, address.m_spend_public_key, output_key);
     CHECK_AND_ASSERT_MES(r, false, "failed to derive_public_key(" << derivation << ", "
