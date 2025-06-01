@@ -108,6 +108,10 @@ uint8_t HardFork::get_effective_version(uint8_t voting_version) const
 
 bool HardFork::do_check(uint8_t block_version, uint8_t voting_version) const
 {
+
+  if (heights[current_fork_index].height == 0)
+    return true;
+
   return block_version == heights[current_fork_index].version
       && voting_version >= heights[current_fork_index].version;
 }
@@ -115,7 +119,10 @@ bool HardFork::do_check(uint8_t block_version, uint8_t voting_version) const
 bool HardFork::check(const cryptonote::block &block) const
 {
   CRITICAL_REGION_LOCAL(lock);
-  return do_check(::get_block_version(block), ::get_block_vote(block));
+  uint8_t block_version = ::get_block_version(block);
+  uint8_t voting_version = ::get_block_vote(block);
+  MDEBUG("Checking block at height " << db.height() << ": block_version=" << (int)block_version << ", voting_version=" << (int)voting_version << ", expected_version=" << (int)heights[current_fork_index].version);
+  return do_check(block_version, voting_version);
 }
 
 bool HardFork::do_check_for_height(uint8_t block_version, uint8_t voting_version, uint64_t height) const
