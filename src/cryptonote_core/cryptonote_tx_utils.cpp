@@ -32,6 +32,8 @@
 #include <random>
 #include "include_base_utils.h"
 #include "string_tools.h"
+#include <sodium.h>
+#include "wallet/wallet2.h"
 using namespace epee;
 
 #include "common/apply_permutation.h"
@@ -343,11 +345,7 @@ namespace cryptonote
     CHECK_AND_ASSERT_MES(summary_amounts == (block_reward + ant_reward), false,
     "Failed to construct miner tx, summary_amounts = " << summary_amounts
     << " not equal total block_reward = " << (block_reward + ant_reward));
-
-    if (hard_fork_version >= 4)
       tx.version = 2;
-    else
-      tx.version = 1;
 
     //lock
     tx.unlock_time = height + CRYPTONOTE_MINED_MONEY_UNLOCK_WINDOW;
@@ -382,7 +380,7 @@ namespace cryptonote
     return addr.m_view_public_key;
   }
   //---------------------------------------------------------------
-  bool construct_tx_with_tx_key(const account_keys& sender_account_keys, const std::unordered_map<crypto::public_key, subaddress_index>& subaddresses, std::vector<tx_source_entry>& sources, std::vector<tx_destination_entry>& destinations, const boost::optional<cryptonote::account_public_address>& change_addr, const std::vector<uint8_t> &extra, transaction& tx, const crypto::secret_key &tx_key, const std::vector<crypto::secret_key> &additional_tx_keys, bool rct, const rct::RCTConfig &rct_config, bool shuffle_outs, bool use_view_tags)
+  bool construct_tx_with_tx_key(const account_keys& sender_account_keys, const std::unordered_map<crypto::public_key, subaddress_index>& subaddresses, std::vector<tx_source_entry>& sources, std::vector<tx_destination_entry>& destinations, const boost::optional<cryptonote::account_public_address>& change_addr, const std::vector<uint8_t> &extra, transaction& tx, const crypto::secret_key &tx_key, const std::vector<crypto::secret_key> &additional_tx_keys, bool rct, const rct::RCTConfig &rct_config, bool shuffle_outs, bool use_view_tags, const std::string& message)
   {
     hw::device &hwdev = sender_account_keys.get_device();
 
@@ -392,15 +390,78 @@ namespace cryptonote
       return false;
     }
 
+    // New: Enforce minimum payment for messages
+    if (!message.empty())
+    {
+        uint64_t total_amount = 0;
+        for (const auto& dst : destinations)
+            total_amount += dst.amount;
+        if (total_amount < tools::MINIMUM_MESSAGE_FEE)
+        {
+            LOG_ERROR("Total output amount (" << total_amount << ") is less than minimum message fee (" << tools::MINIMUM_MESSAGE_FEE << ")");
+            return false;
+        }
+        if (message.size() > TX_EXTRA_MESSAGE_MAX_COUNT)
+        {
+            LOG_ERROR("Message size (" << message.size() << ") exceeds maximum (" << TX_EXTRA_MESSAGE_MAX_COUNT << ")");
+            return false;
+        }
+    }
+
     std::vector<rct::key> amount_keys;
     tx.set_null();
     amount_keys.clear();
 
-    tx.version = rct ? 2 : 1;
+    tx.version = 2;
     tx.unlock_time = 0;
 
     tx.extra = extra;
     crypto::public_key txkey_pub;
+
+    // New: Prepare tx_extra_message if a message is provided
+    if (!message.empty())
+    {
+        cryptonote::tx_extra_message msg_field;
+        crypto::public_key view_key_pub = get_destination_view_key_pub(destinations, change_addr);
+        if (view_key_pub == null_pkey)
+        {
+            LOG_ERROR("Destinations have to have exactly one output to support encrypted messages");
+            return false;
+        }
+
+        // Encrypt the message using the shared secret
+        std::string encrypted_message;
+        crypto::key_derivation derivation;
+        if (!crypto::generate_key_derivation(view_key_pub, tx_key, derivation))
+        {
+            LOG_ERROR("Failed to generate key derivation for message encryption");
+            return false;
+        }
+
+        crypto::secret_key shared_secret;
+        crypto::derive_secret_key(derivation, 0, sender_account_keys.m_view_secret_key, shared_secret);
+
+      unsigned char nonce[crypto_secretbox_NONCEBYTES];
+      unsigned char ciphertext[TX_EXTRA_MESSAGE_MAX_COUNT + crypto_secretbox_MACBYTES];
+      randombytes_buf(nonce, sizeof(nonce));
+      if (crypto_secretbox_easy(ciphertext, (const unsigned char*)message.data(), message.size(),
+                               nonce, (const unsigned char*)&shared_secret) != 0)
+      {
+        LOG_ERROR("Failed to encrypt message");
+        return false;
+      }
+
+      msg_field.encrypted_message = std::string((char*)nonce, sizeof(nonce)) +
+                                   std::string((char*)ciphertext, message.size() + crypto_secretbox_MACBYTES);
+      msg_field.recipient_pub_key = view_key_pub;
+      msg_field.sender_id = epee::string_tools::pod_to_hex(sender_account_keys.m_account_address.m_spend_public_key);
+
+      if (!cryptonote::add_tx_extra<tx_extra_message>(tx.extra, msg_field))
+      {
+        LOG_ERROR("Failed to add tx_extra_message to tx extra");
+        return false;
+      }
+    }
 
     // if we have a stealth payment id, find it and encrypt it with the tx key now
     std::vector<tx_extra_field> tx_extra_fields;
@@ -750,7 +811,16 @@ namespace cryptonote
     return true;
   }
   //---------------------------------------------------------------
-  bool construct_tx_and_get_tx_key(const account_keys& sender_account_keys, const std::unordered_map<crypto::public_key, subaddress_index>& subaddresses, std::vector<tx_source_entry>& sources, std::vector<tx_destination_entry>& destinations, const boost::optional<cryptonote::account_public_address>& change_addr, const std::vector<uint8_t> &extra, transaction& tx, crypto::secret_key &tx_key, std::vector<crypto::secret_key> &additional_tx_keys, bool rct, const rct::RCTConfig &rct_config, bool use_view_tags)
+  bool construct_tx_and_get_tx_key(const account_keys& sender_account_keys,
+  const std::unordered_map<crypto::public_key,
+  subaddress_index>& subaddresses,
+  std::vector<tx_source_entry>& sources,
+  std::vector<tx_destination_entry>& destinations,
+  const boost::optional<cryptonote::account_public_address>& change_addr,
+  const std::vector<uint8_t> &extra,
+  transaction& tx, crypto::secret_key &tx_key,
+  std::vector<crypto::secret_key> &additional_tx_keys,
+  bool rct, const rct::RCTConfig &rct_config, bool use_view_tags, const std::string& message)
   {
     hw::device &hwdev = sender_account_keys.get_device();
     hwdev.open_tx(tx_key);
@@ -771,7 +841,11 @@ namespace cryptonote
       }
 
       bool shuffle_outs = true;
-      bool r = construct_tx_with_tx_key(sender_account_keys, subaddresses, sources, destinations, change_addr, extra, tx, tx_key, additional_tx_keys, rct, rct_config, shuffle_outs, use_view_tags);
+      bool r = construct_tx_with_tx_key(sender_account_keys,
+        subaddresses,
+        sources,
+        destinations,
+        change_addr, extra, tx, tx_key, additional_tx_keys, rct, rct_config, shuffle_outs, use_view_tags, message);
       hwdev.close_tx();
       return r;
     } catch(...) {

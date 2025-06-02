@@ -413,6 +413,8 @@ namespace tools
     MINFO("Background mining enabled. The daemon will mine when idle and not on battery.");
   }
   //------------------------------------------------------------------------------------------------------------------------------
+
+  //---------------------------------------------------------------------------------------------------------------
   bool wallet_rpc_server::not_open(epee::json_rpc::error& er)
   {
       er.code = WALLET_RPC_ERROR_CODE_NOT_OPEN;
@@ -4754,144 +4756,6 @@ namespace tools
     }
     return true;
   }
-  //---------------------------------------------------------------------------------------------------------------
-
-    bool wallet_rpc_server::on_send_message(const wallet_rpc::COMMAND_RPC_SEND_MESSAGE::request& req, wallet_rpc::COMMAND_RPC_SEND_MESSAGE::response& res, epee::json_rpc::error& er, const connection_context* ctx)
-    {
-      try
-      {
-        cryptonote::address_parse_info address_info;
-        if (!cryptonote::get_account_address_from_str(address_info, m_wallet->nettype(), req.recipient_address))
-        {
-          er.code = WALLET_RPC_ERROR_CODE_WRONG_ADDRESS;
-          er.message = "Invalid recipient address";
-          return false;
-        }
-
-        if (req.message.empty() || req.message.size() > TX_EXTRA_MESSAGE_MAX_COUNT)
-        {
-          er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM;
-          er.message = "Message is empty or exceeds maximum size (" + std::to_string(TX_EXTRA_MESSAGE_MAX_COUNT) + " bytes)";
-          return false;
-        }
-
-        if (req.amount < tools::MINIMUM_MESSAGE_FEE)
-        {
-          er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM;
-          er.message = "Amount too low for message (minimum: " + std::to_string(tools::MINIMUM_MESSAGE_FEE) + ")";
-          return false;
-        }
-
-        std::vector<cryptonote::tx_destination_entry> dsts;
-        cryptonote::tx_destination_entry de;
-        de.amount = req.amount;
-        de.addr = address_info.address;
-        de.is_subaddress = address_info.is_subaddress;
-        dsts.push_back(de);
-
-        // Create transaction without message first
-        std::vector<tools::wallet2::pending_tx> ptx_vector;
-        ptx_vector = m_wallet->create_transactions_2(
-            dsts,               // destinations
-            16,                 // fake_outs_count (mixin)
-            0,                  // priority
-            std::vector<uint8_t>{}, // empty extra initially
-            0,                  // subaddr_account
-            std::set<uint32_t>{}, // subaddr_indices
-            std::set<uint32_t>{}  // subtract_fee_from_outputs (fixed to uint32_t)
-        );
-
-        if (ptx_vector.empty())
-        {
-          er.code = WALLET_RPC_ERROR_CODE_TX_NOT_POSSIBLE;
-          er.message = "Failed to construct transaction";
-          return false;
-        }
-
-        // Add encrypted message to transaction extra
-        std::vector<uint8_t> extra;
-        cryptonote::tx_extra_message msg_field;
-        if (!m_wallet->encrypt_message(req.message, address_info.address, ptx_vector.front().tx_key, msg_field.encrypted_message))
-        {
-          er.code = WALLET_RPC_ERROR_CODE_INVALID_PARAM;
-          er.message = "Failed to encrypt message";
-          return false;
-        }
-        msg_field.recipient_pub_key = address_info.address.m_view_public_key;
-        msg_field.sender_id = epee::string_tools::pod_to_hex(m_wallet->get_account().get_keys().m_account_address.m_spend_public_key);
-        cryptonote::add_tx_extra<cryptonote::tx_extra_message>(extra, msg_field);
-
-        // Update transaction with extra data
-        ptx_vector.front().tx.extra = extra;
-
-        for (auto& ptx : ptx_vector)
-        {
-          m_wallet->commit_tx(ptx);
-        }
-
-        res.tx_hash = epee::string_tools::pod_to_hex(get_transaction_hash(ptx_vector.front().tx));
-        return true;
-      }
-      catch (const std::exception& e)
-      {
-        er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
-        er.message = e.what();
-        return false;
-      }
-    }
-   //-------------------------------------------------------
-    bool wallet_rpc_server::on_get_messages(const wallet_rpc::COMMAND_RPC_GET_MESSAGES::request& req, wallet_rpc::COMMAND_RPC_GET_MESSAGES::response& res, epee::json_rpc::error& er, const connection_context* ctx)
-    {
-      try
-      {
-        std::vector<wallet2::transfer_details> transfers;
-        m_wallet->get_transfers(transfers);
-
-        std::vector<std::pair<std::string, std::string>> messages;
-        for (const auto& entry : transfers)
-        {
-          cryptonote::COMMAND_RPC_GET_TRANSACTIONS::request tx_req;
-          cryptonote::COMMAND_RPC_GET_TRANSACTIONS::response tx_res;
-          tx_req.txs_hashes.push_back(epee::string_tools::pod_to_hex(entry.m_txid));
-          tx_req.decode_as_json = false;
-          tx_req.prune = false;
-
-          if (!m_wallet->invoke_http_json("/get_transactions", tx_req, tx_res))
-            continue;
-
-          if (!tx_res.txs.empty() && !tx_res.txs[0].as_hex.empty())
-          {
-            cryptonote::blobdata tx_blob;
-            if (epee::string_tools::parse_hexstr_to_binbuff(tx_res.txs[0].as_hex, tx_blob))
-            {
-              cryptonote::transaction tx;
-              if (cryptonote::parse_and_validate_tx_from_blob(tx_blob, tx))
-              {
-                m_wallet->parse_incoming_message(tx, messages);
-              }
-            }
-          }
-        }
-
-        for (size_t i = 0; i < messages.size() && i < transfers.size(); ++i)
-        {
-          wallet_rpc::COMMAND_RPC_GET_MESSAGES::response::message m;
-          m.sender_id = messages[i].first;
-          m.content = messages[i].second;
-          m.tx_hash = epee::string_tools::pod_to_hex(transfers[i].m_txid);
-          m.amount = transfers[i].m_amount;
-          res.messages.push_back(m);
-        }
-
-        return true;
-      }
-      catch (const std::exception& e)
-      {
-        er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
-        er.message = e.what();
-        return false;
-      }
-    }
   //------------------------------------------------------------------------------------------------------------------------------
   bool wallet_rpc_server::on_get_version(const wallet_rpc::COMMAND_RPC_GET_VERSION::request& req, wallet_rpc::COMMAND_RPC_GET_VERSION::response& res, epee::json_rpc::error& er, const connection_context *ctx)
   {

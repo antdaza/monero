@@ -2782,5 +2782,64 @@ namespace wallet_rpc
     };
     typedef epee::misc_utils::struct_init<response_t> response;
   };
+
+    struct COMMAND_RPC_SEND_MESSAGE
+    {
+      struct request_t
+      {
+        std::string recipient_address;
+        std::string message;
+        uint64_t amount; // In atomic units
+        BEGIN_KV_SERIALIZE_MAP()
+          KV_SERIALIZE(recipient_address)
+          KV_SERIALIZE(message)
+          KV_SERIALIZE(amount)
+        END_KV_SERIALIZE_MAP()
+      };
+    typedef epee::misc_utils::struct_init<request_t> request;
+
+      struct response_t
+      {
+        std::string tx_hash;
+        BEGIN_KV_SERIALIZE_MAP()
+          KV_SERIALIZE(tx_hash)
+        END_KV_SERIALIZE_MAP()
+      };
+    typedef epee::misc_utils::struct_init<response_t> response;
+    };
+
+    // New RPC method to get messages
+    struct COMMAND_RPC_GET_MESSAGES
+    {
+
+      struct request_t
+      {
+        BEGIN_KV_SERIALIZE_MAP()
+        END_KV_SERIALIZE_MAP()
+      };
+    typedef epee::misc_utils::struct_init<request_t> request;
+
+      struct response_t
+      {
+        struct message
+        {
+          std::string sender_id;
+          std::string content;
+          uint64_t amount;
+          std::string tx_hash;
+          BEGIN_KV_SERIALIZE_MAP()
+            KV_SERIALIZE(sender_id)
+            KV_SERIALIZE(content)
+            KV_SERIALIZE(amount)
+            KV_SERIALIZE(tx_hash)
+          END_KV_SERIALIZE_MAP()
+        };
+        std::vector<message> messages;
+        BEGIN_KV_SERIALIZE_MAP()
+          KV_SERIALIZE(messages)
+        END_KV_SERIALIZE_MAP()
+      };
+    typedef epee::misc_utils::struct_init<response_t> response;
+    };
 }
 }

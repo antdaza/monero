@@ -295,6 +295,7 @@ namespace
   const char* USAGE_HELP("help [<command> | all]");
   const char* USAGE_APROPOS("apropos <keyword> [<keyword> ...]");
   const char* USAGE_SCAN_TX("scan_tx <txid> [<txid> ...]");
+  const char* USAGE_SEND_MESSAGE("send_message <address> <amount> <message>");
 
   std::string input_line(const std::string& prompt, bool yesno = false)
   {
@@ -3677,6 +3678,13 @@ simple_wallet::simple_wallet()
   m_cmd_binder.set_handler("wallet_info",
                            boost::bind(&simple_wallet::on_command, this, &simple_wallet::wallet_info, _1),
                            tr("Show the wallet's information."));
+
+  m_cmd_binder.set_handler("send_message",
+                           boost::bind(&simple_wallet::on_command, this, &simple_wallet::send_message, _1),
+                           tr("Send Messages"));
+  m_cmd_binder.set_handler("get_message",
+                           boost::bind(&simple_wallet::on_command, this, &simple_wallet::get_messages, _1),
+                           tr("Get Messages"));
   m_cmd_binder.set_handler("sign",
                            boost::bind(&simple_wallet::on_command, this, &simple_wallet::sign, _1),
                            tr(USAGE_SIGN),
@@ -6721,6 +6729,152 @@ bool simple_wallet::on_command(bool (simple_wallet::*cmd)(const std::vector<std:
   check_for_inactivity_lock(false);
   return (this->*cmd)(args);
 }
+//----------------------------------------------------------------------------------------------------
+   bool simple_wallet::send_message(const std::vector<std::string>& args)
+  {
+    if (args.size() < 3)
+    {
+      fail_msg_writer() << tr("Usage: send_message <address> <amount> <message>");
+      return true;
+    }
+
+    cryptonote::address_parse_info address_info;
+    if (!cryptonote::get_account_address_from_str(address_info, m_wallet->nettype(), args[0]))
+    {
+      fail_msg_writer() << tr("Invalid address");
+      return true;
+    }
+
+    uint64_t amount = 0;
+    if (!cryptonote::parse_amount(amount, args[1]))
+    {
+      fail_msg_writer() << tr("Invalid amount");
+      return true;
+    }
+
+    if (amount < tools::MINIMUM_MESSAGE_FEE)
+    {
+      fail_msg_writer() << tr("Amount too low for message (minimum: ") << print_money(tools::MINIMUM_MESSAGE_FEE) << ")";
+      return true;
+    }
+
+    std::string message = args[2];
+    if (message.size() > TX_EXTRA_MESSAGE_MAX_COUNT)
+    {
+      fail_msg_writer() << tr("Message too long (max: ") << TX_EXTRA_MESSAGE_MAX_COUNT << " bytes)";
+      return true;
+    }
+
+    try
+    {
+      // Prepare destination
+      std::vector<cryptonote::tx_destination_entry> dsts;
+      cryptonote::tx_destination_entry de;
+      de.amount = amount;
+      de.addr = address_info.address;
+      de.is_subaddress = address_info.is_subaddress;
+      dsts.push_back(de);
+
+      // Create transaction without message first
+      std::vector<tools::wallet2::pending_tx> ptx_vector;
+      ptx_vector = m_wallet->create_transactions_2(
+          dsts,               // destinations
+          16,                 // fake_outs_count (mixin)
+          0,                  // priority
+          std::vector<uint8_t>{}, // empty extra initially
+          0,                  // subaddr_account
+          std::set<uint32_t>{}, // subaddr_indices
+          std::set<uint32_t>{}  // subtract_fee_from_outputs
+      );
+
+      if (ptx_vector.empty())
+      {
+        fail_msg_writer() << tr("Failed to construct transaction");
+        return true;
+      }
+
+      // Add encrypted message to transaction extra
+      std::vector<uint8_t> extra;
+      cryptonote::tx_extra_message msg_field;
+      if (!m_wallet->encrypt_message(message, address_info.address, ptx_vector.front().tx_key, msg_field.encrypted_message))
+      {
+        fail_msg_writer() << tr("Failed to encrypt message");
+        return true;
+      }
+      msg_field.recipient_pub_key = address_info.address.m_view_public_key;
+      msg_field.sender_id = epee::string_tools::pod_to_hex(m_wallet->get_account().get_keys().m_account_address.m_spend_public_key);
+      cryptonote::add_tx_extra<cryptonote::tx_extra_message>(extra, msg_field);
+
+      // Update transaction with extra data
+      ptx_vector.front().tx.extra = extra;
+
+      // Commit transaction
+      for (auto& ptx : ptx_vector)
+      {
+        m_wallet->commit_tx(ptx);
+      }
+
+      success_msg_writer() << tr("Message sent, txid: ") << epee::string_tools::pod_to_hex(get_transaction_hash(ptx_vector.front().tx));
+      return true;
+    }
+    catch (const std::exception& e)
+    {
+      fail_msg_writer() << tr("Error: ") << e.what();
+      return true;
+    }
+  }
+//------------------------------------------------------------------------
+  bool simple_wallet::get_messages(const std::vector<std::string>& args)
+  {
+    try
+    {
+      std::vector<tools::wallet2::transfer_details> transfers;
+      m_wallet->get_transfers(transfers);
+
+      std::vector<std::pair<std::string, std::string>> messages;
+      for (const auto& entry : transfers)
+      {
+        cryptonote::COMMAND_RPC_GET_TRANSACTIONS::request tx_req;
+        cryptonote::COMMAND_RPC_GET_TRANSACTIONS::response tx_res;
+        tx_req.txs_hashes.push_back(epee::string_tools::pod_to_hex(entry.m_txid));
+        tx_req.decode_as_json = false;
+        tx_req.prune = false;
+
+        if (!m_wallet->invoke_http_json("/get_transactions", tx_req, tx_res))
+          continue;
+
+        if (!tx_res.txs.empty() && !tx_res.txs[0].as_hex.empty())
+        {
+          cryptonote::blobdata tx_blob;
+          if (epee::string_tools::parse_hexstr_to_binbuff(tx_res.txs[0].as_hex, tx_blob))
+          {
+            cryptonote::transaction tx;
+            if (cryptonote::parse_and_validate_tx_from_blob(tx_blob, tx))
+            {
+              m_wallet->parse_incoming_message(tx, messages);
+            }
+          }
+        }
+      }
+
+      if (messages.empty())
+      {
+        success_msg_writer() << tr("No messages found");
+        return true;
+      }
+
+      for (const auto& msg : messages)
+      {
+        success_msg_writer() << tr("From: ") << msg.first << tr(" Message: ") << msg.second;
+      }
+      return true;
+    }
+    catch (const std::exception& e)
+    {
+      fail_msg_writer() << tr("Error: ") << e.what();
+      return true;
+    }
+  }
 //----------------------------------------------------------------------------------------------------
 bool simple_wallet::transfer_main(const std::vector<std::string> &args_, bool called_by_mms)
 {

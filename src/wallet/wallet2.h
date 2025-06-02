@@ -91,6 +91,7 @@ class wallet_accessor_test;
 
 namespace tools
 {
+  static const uint64_t MINIMUM_MESSAGE_FEE = 1000000000;
   class ringdb;
   class wallet2;
   class Notify;
@@ -282,7 +283,11 @@ private:
     static std::string device_name_option(const boost::program_options::variables_map& vm);
     static std::string device_derivation_path_option(const boost::program_options::variables_map &vm);
     static void init_options(boost::program_options::options_description& desc_params);
-
+    bool encrypt_message(const std::string& plain_message, const cryptonote::account_public_address& recipient_address,
+                               const crypto::secret_key& tx_secret_key, std::string& encrypted_message);
+    bool decrypt_message(const std::string& encrypted_message, const crypto::public_key& tx_pub_key,
+                               std::string& plain_message);
+    void parse_incoming_message(const cryptonote::transaction& tx, std::vector<std::pair<std::string, std::string>>& messages);
     //! Uses stdin and stdout. Returns a wallet2 if no errors.
     static std::pair<std::unique_ptr<wallet2>, password_container> make_from_json(const boost::program_options::variables_map& vm, bool unattended, const std::string& json_file, const std::function<boost::optional<password_container>(const char *, bool)> &password_prompter);
 

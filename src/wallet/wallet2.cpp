@@ -46,6 +46,7 @@
 #include "include_base_utils.h"
 using namespace epee;
 
+#include <sodium.h>
 #include "cryptonote_config.h"
 #include "hardforks/hardforks.h"
 #include "cryptonote_core/tx_sanity_check.h"
@@ -1856,6 +1857,57 @@ void reattach_blockchain(hashchain &blockchain, wallet2::detached_blockchain_dat
     error::wallet_internal_error, "Unexpected blockchain size after re-attaching");
 }
 //----------------------------------------------------------------------------------------------------
+  bool wallet2::encrypt_message(const std::string& plain_message, const cryptonote::account_public_address& recipient_address,
+                               const crypto::secret_key& tx_secret_key, std::string& encrypted_message)
+  {
+    crypto::key_derivation derivation;
+    if (!crypto::generate_key_derivation(recipient_address.m_view_public_key, tx_secret_key, derivation))
+      return false;
+
+    crypto::secret_key shared_secret;
+    crypto::derive_secret_key(derivation, 0, m_account.get_keys().m_view_secret_key, shared_secret);
+
+    // Use libsodium for AES-like encryption (e.g., crypto_secretbox)
+    unsigned char nonce[crypto_secretbox_NONCEBYTES];
+    unsigned char ciphertext[TX_EXTRA_MESSAGE_MAX_COUNT + crypto_secretbox_MACBYTES];
+    randombytes_buf(nonce, sizeof(nonce));
+    if (crypto_secretbox_easy(ciphertext, (const unsigned char*)plain_message.data(), plain_message.size(),
+                             nonce, (const unsigned char*)&shared_secret) != 0)
+      return false;
+
+    // Combine nonce and ciphertext
+    encrypted_message = std::string((char*)nonce, sizeof(nonce)) + std::string((char*)ciphertext, plain_message.size() + crypto_secretbox_MACBYTES);
+    return true;
+  }
+//--------------------------------------------------------------------------------------------------------
+  // Add a new method to decrypt a message
+  bool wallet2::decrypt_message(const std::string& encrypted_message, const crypto::public_key& tx_pub_key,
+                               std::string& plain_message)
+  {
+    crypto::key_derivation derivation;
+    if (!crypto::generate_key_derivation(tx_pub_key, m_account.get_keys().m_view_secret_key, derivation))
+      return false;
+
+    crypto::secret_key shared_secret;
+    crypto::derive_secret_key(derivation, 0, m_account.get_keys().m_view_secret_key, shared_secret);
+
+    // Extract nonce and ciphertext
+    if (encrypted_message.size() < crypto_secretbox_NONCEBYTES + crypto_secretbox_MACBYTES)
+      return false;
+
+    const unsigned char* nonce = (const unsigned char*)encrypted_message.data();
+    const unsigned char* ciphertext = (const unsigned char*)encrypted_message.data() + crypto_secretbox_NONCEBYTES;
+    size_t ciphertext_len = encrypted_message.size() - crypto_secretbox_NONCEBYTES;
+
+    std::vector<unsigned char> plaintext(ciphertext_len - crypto_secretbox_MACBYTES);
+    if (crypto_secretbox_open_easy(plaintext.data(), ciphertext, ciphertext_len, nonce,
+                                  (const unsigned char*)&shared_secret) != 0)
+      return false;
+
+    plain_message = std::string((char*)plaintext.data(), plaintext.size());
+    return true;
+  }
+//----------------------------------------------------------------------------------------------------
 bool has_nonrequested_tx_at_height_or_above_requested(uint64_t height, const std::unordered_set<crypto::hash> &requested_txids, const wallet2::transfer_container &transfers,
     const wallet2::payment_container &payments, const serializable_unordered_map<crypto::hash, wallet2::confirmed_transfer_details> &confirmed_txs)
 {
@@ -3285,7 +3337,7 @@ void wallet2::process_parsed_blocks(uint64_t start_height, const std::vector<cry
     {
       THROW_WALLET_EXCEPTION_IF(txidx >= tx_cache_data.size(), error::wallet_internal_error, "txidx out of range");
       const cryptonote::transaction& tx = parsed_blocks[i].block.miner_tx;
-      const size_t n_vouts = (m_refresh_type == RefreshType::RefreshOptimizeCoinbase && tx.version < 2) ? 1 : tx.vout.size();
+      const size_t n_vouts = tx.vout.size();
       if (parsed_blocks[i].block.major_version >= hf_version_view_tags)
         geniods.push_back(geniod_params{ tx, n_vouts, txidx });
       else
@@ -3384,7 +3436,7 @@ void wallet2::refresh(bool trusted_daemon, uint64_t start_height, uint64_t & blo
 void check_block_hard_fork_version(cryptonote::network_type nettype, uint8_t hf_version, uint64_t height, bool &wallet_is_outdated, bool &daemon_is_outdated)
 {
     // Default to the first version (7) if no match is found
-    uint8_t expected_version = mainnet_hard_forks[0].version; // 7
+    uint8_t expected_version = 7; //mainnet_hard_forks[0].version; // 7
 
     // Iterate through the hard fork table to find the expected version for the given height
     for (size_t i = 0; i < num_mainnet_hard_forks; ++i)
@@ -7861,6 +7913,29 @@ bool wallet2::sign_tx(unsigned_tx_set &exported_txs, std::vector<wallet2::pendin
 
   return true;
 }
+//----------------------------------------------------------------------------------------------------
+void wallet2::parse_incoming_message(const cryptonote::transaction& tx, std::vector<std::pair<std::string, std::string>>& messages)
+  {
+    std::vector<cryptonote::tx_extra_field> tx_extra_fields;
+    if (!cryptonote::parse_tx_extra(tx.extra, tx_extra_fields))
+      return;
+
+    cryptonote::tx_extra_pub_key tx_pub_key_field;
+    if (!find_tx_extra_field_by_type(tx_extra_fields, tx_pub_key_field))
+      return;
+
+    for (const auto& field : tx_extra_fields)
+    {
+      if (const cryptonote::tx_extra_message* msg = boost::get<cryptonote::tx_extra_message>(&field))
+      {
+        std::string plain_message;
+        if (decrypt_message(msg->encrypted_message, tx_pub_key_field.pub_key, plain_message))
+        {
+          messages.emplace_back(msg->sender_id, plain_message);
+        }
+      }
+    }
+  }
 //----------------------------------------------------------------------------------------------------
 bool wallet2::sign_tx(unsigned_tx_set &exported_txs, const std::string &signed_filename, std::vector<wallet2::pending_tx> &txs, bool export_raw)
 {
